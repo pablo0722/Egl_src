@@ -43,7 +43,7 @@
 
 #include <EGL/eglplatform.h>
 
-#include "GLEngine_src/Khr_src/Egl_src/EglWindowSystem.hpp"
+#include "GLEngine/Khr/Egl/EglWindowSystem.hpp"
 
 #define CHECK_BOOL(___expression___) do{ if(!___expression___) { printf("%s: '%s' failed\n", __func__, #___expression___); return false; }} while(0)
 #define CHECK_NOT(___expression___, ___cond___) do{ if(___expression___ == ___cond___) { printf("%s: '%s == %s' failed\n", __func__, #___cond___, #___expression___); return false; }} while(0)
