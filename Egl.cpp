@@ -36,12 +36,18 @@
 //    OpenGL ES 3.0 Programming Guide.
 //
 
+#include "GLEngine/Khr/Egl/Egl.hpp"
+
 #include <stdio.h>
 #include <string.h>
 
 #include <EGL/eglplatform.h>
 
-#include "GLEngine/Khr/Egl/Egl.hpp"
+#include "GLEngine_src/Khr_src/Egl_src/EglWindowSystem.hpp"
+
+#define CHECK_BOOL(___expression___) do{ if(!___expression___) { printf("%s: '%s' failed\n", __func__, #___expression___); return false; }} while(0)
+#define CHECK_NOT(___expression___, ___cond___) do{ if(___expression___ == ___cond___) { printf("%s: '%s == %s' failed\n", __func__, #___cond___, #___expression___); return false; }} while(0)
+#define CHECK_GRATER_THAN(___expression___, ___cond___) do{ if(___expression___ <= ___cond___) { printf("%s: '%s <= %s' failed\n", __func__, #___cond___, #___expression___); return false; }} while(0)
 
 ///
 // GetContextRenderableType()
@@ -49,20 +55,102 @@
 //    Check whether EGL_KHR_create_context extension is supported.  If so,
 //    return EGL_OPENGL_ES3_BIT_KHR instead of EGL_OPENGL_ES2_BIT
 //
-EGLint GetContextRenderableType(EGLDisplay eglDisplay)
+EGLint GetContextRenderableType(EGLDisplay display)
 {
 #ifdef EGL_KHR_create_context
-   const char *extensions = eglQueryString ( eglDisplay, EGL_EXTENSIONS );
+    const char *extensions = eglQueryString ( display, EGL_EXTENSIONS );
 
-   // check whether EGL_KHR_create_context is in the extension string
-   if ( extensions != NULL && strstr( extensions, "EGL_KHR_create_context" ) )
-   {
-      // extension is supported
-      return EGL_OPENGL_ES3_BIT_KHR;
-   }
+    // check whether EGL_KHR_create_context is in the extension string
+    if ( extensions != NULL && strstr( extensions, "EGL_KHR_create_context" ) )
+    {
+        // extension is supported
+        return EGL_OPENGL_ES3_BIT_KHR;
+    }
 #endif
-   // extension is not supported
-   return EGL_OPENGL_ES2_BIT;
+    // extension is not supported
+    return EGL_OPENGL_ES2_BIT;
+}
+
+bool Egl::attachToNativeDisplay() {
+    windowSystem.attachToNativeDisplay();
+
+    return true;
+}
+
+bool Egl::createNativeWindow(const char *title, int posx, int posy, int width, int height) {
+    windowSystem.createNativeWindow(title, posx, posy, width, height);
+
+    return true;
+}
+
+bool Egl::initEglOnDisplay() {
+    display = eglGetDisplay(windowSystem.getNativeDisplay());
+    CHECK_NOT(display, EGL_NO_DISPLAY);
+    CHECK_BOOL(eglInitialize ( display, &majorVersion, &minorVersion ));
+    
+    printf("%s: EGL VERSION: %d.%d\n", __func__, majorVersion, minorVersion);
+
+    return true;
+}
+
+bool Egl::getFramebufferConfig(GLuint flags) {
+    EGLint numConfigs = 0;
+    EGLint attribList[] =
+    {
+        EGL_RED_SIZE,       5,
+        EGL_GREEN_SIZE,     6,
+        EGL_BLUE_SIZE,      5,
+        EGL_ALPHA_SIZE,     (flags & EGL_FLAG_FRAMEBUFFER_ALPHA) ? 8 : EGL_DONT_CARE,
+        EGL_DEPTH_SIZE,     (flags & EGL_FLAG_FRAMEBUFFER_DEPTH) ? 8 : EGL_DONT_CARE,
+        EGL_STENCIL_SIZE,   (flags & EGL_FLAG_FRAMEBUFFER_STENCIL) ? 8 : EGL_DONT_CARE,
+        EGL_SAMPLE_BUFFERS, (flags & EGL_FLAG_FRAMEBUFFER_MULTISAMPLE) ? 1 : 0,
+        // if EGL_KHR_create_context extension is supported, then we will use
+        // EGL_OPENGL_ES3_BIT_KHR instead of EGL_OPENGL_ES2_BIT in the attribute list
+        EGL_RENDERABLE_TYPE, GetContextRenderableType(display),
+        EGL_NONE
+    };
+
+    // Choose config
+    CHECK_BOOL(eglChooseConfig(display, attribList, &config, 1, &numConfigs));
+
+    CHECK_GRATER_THAN(numConfigs, 0);
+
+    return true;
+}
+
+bool Egl::createSurface() {
+#ifdef EGL_USE_ANDROID
+    // For Android, need to get the EGL_NATIVE_VISUAL_ID and set it using ANativeWindow_setBuffersGeometry
+    {
+        EGLint format = 0;
+        eglGetConfigAttrib ( display, config, EGL_NATIVE_VISUAL_ID, &format );
+        ANativeWindow_setBuffersGeometry ( context->eglNativeWindow, 0, 0, format );
+    }
+#endif // EGL_USE_ANDROID
+
+    // Create a surface
+    surface = eglCreateWindowSurface(display, config, windowSystem.getNativeWindow(), NULL);
+
+    CHECK_NOT(surface, EGL_NO_SURFACE);
+
+    return true;
+}
+
+bool Egl::createContext() {
+    EGLint contextAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+
+    context = eglCreateContext(display, config, EGL_NO_CONTEXT, contextAttribs);
+
+    CHECK_NOT(context, EGL_NO_CONTEXT);
+
+    return true;
+}
+
+bool Egl::bindContextToSurface() {
+    // Make the context current
+    CHECK_BOOL(eglMakeCurrent(display, surface, surface, context));
+
+    return true;
 }
 
 //////////////////////////////////////////////////////////////////
@@ -74,98 +162,24 @@ EGLint GetContextRenderableType(EGLDisplay eglDisplay)
 ///
 //  EGL_CreateWindow()
 //
-bool Egl::CreateSurfaceAndBindContext(EGLNativeDisplayType display, EGLNativeWindowType window, GLuint flags)
+bool Egl::CreateSurfaceAndBindContext(const char *title, int posx, int posy, int width, int height, GLuint flags)
 {
-   EGLConfig config;
-   EGLint majorVersion;
-   EGLint minorVersion;
-   EGLint contextAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+    CHECK_BOOL(attachToNativeDisplay());
+    CHECK_BOOL(createNativeWindow(title, posx, posy, width, height));
+    CHECK_BOOL(initEglOnDisplay());
+    CHECK_BOOL(getFramebufferConfig(flags));
+    CHECK_BOOL(createSurface());
+    CHECK_BOOL(createContext());
+    CHECK_BOOL(bindContextToSurface());
 
-#ifdef ANDROID
-   // For Android, get the width/height from the window rather than what the
-   // application requested.
-   context->width = ANativeWindow_getWidth(display);
-   context->height = ANativeWindow_getHeight(window);
-#endif
-
-   eglDisplay = eglGetDisplay(display);
-   if ( eglDisplay == EGL_NO_DISPLAY )
-   {
-      return GL_FALSE;
-   }
-
-   // Initialize EGL
-   if ( !eglInitialize ( eglDisplay, &majorVersion, &minorVersion ) )
-   {
-      return GL_FALSE;
-   }
-
-   printf("%s: EGL VERSION: %d.%d\n", __func__, majorVersion, minorVersion);
-
-   {
-      EGLint numConfigs = 0;
-      EGLint attribList[] =
-      {
-         EGL_RED_SIZE,       5,
-         EGL_GREEN_SIZE,     6,
-         EGL_BLUE_SIZE,      5,
-         EGL_ALPHA_SIZE,     (flags & EGL_FLAG_FRAMEBUFFER_ALPHA) ? 8 : EGL_DONT_CARE,
-         EGL_DEPTH_SIZE,     (flags & EGL_FLAG_FRAMEBUFFER_DEPTH) ? 8 : EGL_DONT_CARE,
-         EGL_STENCIL_SIZE,   (flags & EGL_FLAG_FRAMEBUFFER_STENCIL) ? 8 : EGL_DONT_CARE,
-         EGL_SAMPLE_BUFFERS, (flags & EGL_FLAG_FRAMEBUFFER_MULTISAMPLE) ? 1 : 0,
-         // if EGL_KHR_create_context extension is supported, then we will use
-         // EGL_OPENGL_ES3_BIT_KHR instead of EGL_OPENGL_ES2_BIT in the attribute list
-         EGL_RENDERABLE_TYPE, GetContextRenderableType(eglDisplay),
-         EGL_NONE
-      };
-
-      // Choose config
-      if(!eglChooseConfig(eglDisplay, attribList, &config, 1, &numConfigs))
-      {
-         return GL_FALSE;
-      }
-
-      if(numConfigs < 1)
-      {
-         return GL_FALSE;
-      }
-   }
-
-#ifdef ANDROID
-   // For Android, need to get the EGL_NATIVE_VISUAL_ID and set it using ANativeWindow_setBuffersGeometry
-   {
-      EGLint format = 0;
-      eglGetConfigAttrib ( eglDisplay, config, EGL_NATIVE_VISUAL_ID, &format );
-      ANativeWindow_setBuffersGeometry ( context->eglNativeWindow, 0, 0, format );
-   }
-#endif // ANDROID
-
-   // Create a surface
-   eglSurface = eglCreateWindowSurface(eglDisplay, config, window, NULL);
-
-   if(eglSurface == EGL_NO_SURFACE)
-   {
-      return GL_FALSE;
-   }
-
-   // Create a GL context
-   eglContext = eglCreateContext(eglDisplay, config, EGL_NO_CONTEXT, contextAttribs);
-
-   if(eglContext == EGL_NO_CONTEXT)
-   {
-      return GL_FALSE;
-   }
-
-   // Make the context current
-   if(!eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext))
-   {
-      return GL_FALSE;
-   }
-
-   return GL_TRUE;
+    return true;
 }
 
 void Egl::swapBuffers() {
-   // Swap buffers. It's a blocking call if VSYNC is enabled, in that case will wait 16ms.
-   eglSwapBuffers(eglDisplay, eglSurface);
+    // Swap buffers. It's a blocking call if VSYNC is enabled, in that case will wait 16ms.
+    eglSwapBuffers(display, surface);
+}
+
+void Egl::getEvent(WindowEvent *event) const {
+    windowSystem.getEvent(event);
 }
